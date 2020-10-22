@@ -1,0 +1,90 @@
+pipeline{
+    agent any
+    tools {
+        maven 'maven'
+    }
+    environment {
+        NEXUS_VERSION = "nexus3"
+        NEXUS_PROTOCOL = "http"
+        NEXUS_URL = "ec2-35-154-165-171.ap-south-1.compute.amazonaws.com:8081"
+        NEXUS_REPOSITORY = "spring-app"
+        NEXUS_CREDENTIAL_ID = "nexus_credentials"
+        TOMCAT_URL = "ec2-13-234-122-146.ap-south-1.compute.amazonaws.com:8080"
+    }
+    stages{
+        stage("Git checkout"){
+            steps{
+                git changelog: false, credentialsId: 'github_credentials', poll: false, url: 'https://github.com/dhiman94/spring3-mvc-maven-xml-hello-world.git'
+            }
+        }
+        stage("Maven build"){
+            steps{
+                sh label: '', script: 'mvn clean package'
+            }
+        }
+        stage("Publish artifacts to Nexus"){
+            steps{
+                script{
+                    //read pom.xml file
+                    pom = readMavenPom file: 'pom.xml';
+                    // Find built artifact under target folder
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    // Print some info from the artifact found
+                    echo "${filesByGlob[0].name} ${filesByGlob[0].path} ${filesByGlob[0].directory} ${filesByGlob[0].length} ${filesByGlob[0].lastModified}"
+                    // extract artifact path
+                    artifactPath = filesByGlob[0].path;
+                    // Assign to a boolean response verifying If the artifact name exists
+                    artifactExists = fileExists artifactPath;
+                    if(artifactExists){
+                        nexusArtifactUploader(
+                            nexusVersion: NEXUS_VERSION,
+                            protocol: NEXUS_PROTOCOL,
+                            nexusUrl: NEXUS_URL,
+                            groupId: pom.groupId,
+                            version: '${BUILD_NUMBER}',
+                            repository: NEXUS_REPOSITORY,
+                            credentialsId: NEXUS_CREDENTIAL_ID,
+                            artifacts: [
+                                // Artifact generated such as .jar, .ear and .war files.
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: artifactPath,
+                                type: pom.packaging],
+                                // Lets upload the pom.xml file for additional information for Transitive dependencies
+                                [artifactId: pom.artifactId,
+                                classifier: '',
+                                file: "pom.xml",
+                                type: "pom"]
+                            ]
+                        );
+                    } else {
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                    
+                }
+            }
+        }
+        stage("Download artifacts from nexus") {
+            steps{
+               // remove old artifact
+               sh 'rm -f artifact.war'
+               // download latest artifact from nexus repo
+               withCredentials([usernameColonPassword(credentialsId: 'nexus_credentials', variable: 'nexus_credentials')]) {
+                   sh 'curl -v -u ${nexus_credentials} http://${NEXUS_URL}/repository/spring-app/com/mkyong/hello/${BUILD_NUMBER}/hello-${BUILD_NUMBER}.war --output artifact.war'
+               }    
+            }
+        }
+        stage("Deploy to tomcat"){
+            steps{
+                withCredentials([usernameColonPassword(credentialsId: 'tomcat_credentials', variable: 'tomcat_credentials')]) {
+                    sh 'echo "deploying war file to tomcat"'
+                    sh 'curl -v -u ${tomcat_credentials} -T artifact.war "http://${TOMCAT_URL}/manager/text/deploy?path=/pipeline_nexus&update=true"'
+                }
+            }
+        }    
+        
+    }
+    
+}
+
+
