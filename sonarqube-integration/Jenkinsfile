@@ -1,0 +1,96 @@
+pipeline{
+    agent any
+    tools {
+        maven 'maven'
+    }
+    environment {
+        JFROG_SERVER_URL = 'http://ec2-13-233-109-133.ap-south-1.compute.amazonaws.com:8081/artifactory/'
+        JFROG_ARTIFACTORY_URL = 'ec2-13-233-109-133.ap-south-1.compute.amazonaws.com:8082/artifactory'
+        JFROG_CREDENTIAL_ID = 'jfrog_credentials'
+        TOMCAT_URL = 'http://ec2-13-233-109-133.ap-south-1.compute.amazonaws.com:8080/'
+        
+                                                
+    }
+    stages{
+        stage("Git checkout"){
+            steps{
+                git changelog: false, credentialsId: 'github_credentials', poll: false, url: 'https://github.com/dhiman94/spring3-mvc-maven-xml-hello-world.git'
+            }
+        }
+        stage("build & SonarQube analysis") {
+            steps {
+              withSonarQubeEnv(credentialsId: 'sonarqube_ilp2_token', installationName: 'SonarQube Server') {
+                sh 'mvn clean package sonar:sonar'
+              }
+            }
+          }
+          stage("Quality Gate") {
+            steps {
+              timeout(time: 5, unit: 'MINUTES') {
+                waitForQualityGate abortPipeline: true
+              }
+            }
+          }
+        stage("Artifactory Configuration"){
+            steps{
+                rtServer (
+                    id: "ARTIFACTORY_SERVER",
+                    url: JFROG_SERVER_URL,
+                    credentialsId: JFROG_CREDENTIAL_ID
+                )
+            }
+        }
+        stage('push artifacts to jfrog artifactory'){
+            steps{
+                script{
+                    //read pom.xml file
+                    pom = readMavenPom file: 'pom.xml';
+                    // Find built artifact under target folder
+                    filesByGlob = findFiles(glob: "target/*.${pom.packaging}");
+                    // extract artifact path
+                    artifactPath = filesByGlob[0].path;
+                    // Assign to a boolean response verifying If the artifact name exists
+                    artifactExists = fileExists artifactPath;
+                    if(artifactExists){
+                        rtUpload (
+                            serverId: 'ARTIFACTORY_SERVER',
+                            spec: '''{
+                                "files": [
+                                    {
+                                    "pattern": "target/*.${pom.packaging}",
+                                    "target": "spring-app/${BUILD_NUMBER}/"
+                                    }
+                                ]
+                            }''',
+                            buildName: 'spring-maven',
+                            buildNumber: "${BUILD_NUMBER}""
+                        )
+                    } else{
+                        error "*** File: ${artifactPath}, could not be found";
+                    }
+                }
+                
+            }
+        }
+        stage("Download artifacts from jfrog") {
+            steps{
+               // remove old artifact
+               sh 'rm -f artifact.war'
+               // download latest artifact from jfrog artifactory
+               withCredentials([usernameColonPassword(credentialsId: 'jfrog_credentials', variable: 'jfrog_credentials')]) {
+                 sh 'curl -v -u ${jfrog_credentials} http://${JFROG_ARTIFACTORY_URL}/spring-app/${BUILD_NUMBER}/hello-1.0.war --output artifact.war'
+                }
+            }
+        }
+        stage("Deploy to tomcat"){
+            steps{
+                withCredentials([usernameColonPassword(credentialsId: 'tomcat_credentials', variable: 'tomcat_credentials')]) {
+                    sh 'echo "deploying war file to tomcat"'
+                    sh 'curl -v -u ${tomcat_credentials} -T artifact.war "http://${TOMCAT_URL}/manager/text/deploy?path=/ilp1&update=true"'
+                }
+            }
+        } 
+
+    }
+}
+

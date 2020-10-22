@@ -1,0 +1,36 @@
+pipeline{
+    agent any
+    tools{
+        maven 'maven'
+    }
+    stages{
+        stage("Git checkout"){
+            steps{
+                git changelog: false, credentialsId: 'github_credentials', poll: false, url: 'https://github.com/dhiman94/spring3-mvc-maven-xml-hello-world.git'
+            }
+        }
+        stage("Maven build"){
+            steps{
+                sh label: '', script: 'mvn clean package'
+            }    
+        }
+        stage("Build Docker Image"){
+            steps{
+                // build docker image
+                sh 'docker build -t nirvana94/java-web-app:${BUILD_NUMBER} .'
+
+            }
+        }
+        stage("Push Docker Image"){
+            steps{
+                // login to dockerhub
+                withCredentials([string(credentialsId: 'dockerhub_pwd', variable: 'dockerhub_pwd')]) {
+                    sh 'docker login -u nirvana94 -p ${dockerhub_pwd}'
+                }
+                // push docker image
+                sh 'docker push nirvana94/java-web-app:${BUILD_NUMBER}'
+            }
+            
+        }
+    }
+}

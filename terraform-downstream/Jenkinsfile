@@ -1,0 +1,68 @@
+pipeline{
+    agent any
+    
+    triggers {
+        upstream 'maven-helloworld'
+    }
+    tools {
+        terraform 'Terraform-13'
+    }
+    
+    stages{
+        stage('Git Checkout'){
+            steps{
+                git changelog: false, credentialsId: 'github_credentials', poll: false, url: 'https://github.com/dhiman94/iac-demo.git'
+            }
+        }
+        stage('Terraform init'){
+            steps{
+                sh label: '', script: 'terraform init'
+            }
+        }
+        stage('Terraform apply'){
+            steps{
+                sh label: '', script: 'terraform apply --auto-approve'
+            }
+        }
+        stage('Download artifacts from nexus'){
+            // get upstream job build number
+            // download that version of artifact from nexus
+            // create zip file including appspec and scripts and war
+        }
+        stage('copy artifact to s3'){
+            environment{
+                CODEDEPLOY_BUCKET_NAME = sh(script: 'terraform output codedeploy_bucket_name', , returnStdout: true).trim()
+            }
+            steps{
+                //copyArtifacts filter: 'spring-app/artifacts.zip', fingerprintArtifacts: true, projectName: 'maven-helloworld', selector: workspace()
+                sh 'echo copying artifacts to ${CODEDEPLOY_BUCKET_NAME}'
+                sh 'aws s3 cp artifacts.zip s3://${CODEDEPLOY_BUCKET_NAME}/'
+                
+            }
+        }
+        stage('deploy application') {
+            environment{
+                CODEDEPLOY_BUCKET_NAME = sh(script: 'terraform output codedeploy_bucket_name', , returnStdout: true).trim()
+            }
+            steps{
+                //aws cli command to create deployment
+                aws deploy create-deployment --application-name "spring-maven-app" --deployment-group-name "spring-maven-deployment-group" --s3-location bucket="${CODEDEPLOY_BUCKET_NAME}",key="artifacts.zip",bundleType=zip
+            }
+        }
+        stage('Wait for 5min'){
+            steps{
+                sh label: '', script: 'sleep 300'
+            }
+        }
+        stage('Terraform destroy'){
+            environment{
+                CODEDEPLOY_BUCKET_NAME = sh(script: 'terraform output codedeploy_bucket_name', , returnStdout: true).trim()
+            }
+            steps{
+                sh 'aws s3 rm s3://${CODEDEPLOY_BUCKET_NAME} --recursive'
+                sh label: '', script: 'terraform destroy --auto-approve'
+            }
+        }
+    }
+    
+}
